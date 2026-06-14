@@ -1,7 +1,7 @@
 {
-  "name": "gmail-mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server for Gmail — read, write, archive, label, unsubscribe",
+  "name": "mcp-gmail",
+  "version": "1.1.0-fork.0",
+  "description": "MCP server for Gmail — read, write, archive, label, unsubscribe, send, draft, reply. Fork of navbuildz/gmail-mcp-server with send/reply/draft tools added for personal PM use.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

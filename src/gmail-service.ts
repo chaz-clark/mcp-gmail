@@ -34,6 +34,29 @@ export interface UnsubscribeResult {
   detail: string;
 }
 
+export interface SendResult {
+  success: boolean;
+  messageId: string;
+  threadId: string;
+}
+
+export interface DraftResult {
+  success: boolean;
+  draftId: string;
+  messageId: string;
+  threadId: string;
+}
+
+export interface ComposeOptions {
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body: string;
+  /** When set, the new message will thread with this Gmail message (sets In-Reply-To + References + threadId). */
+  inReplyToMessageId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Gmail Service — one instance per access token (per session)
 // ---------------------------------------------------------------------------
@@ -311,6 +334,226 @@ export class GmailService {
       userId: "me",
       requestBody: { raw },
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // send_email
+  // -----------------------------------------------------------------------
+
+  async sendEmail(opts: ComposeOptions): Promise<SendResult> {
+    const { raw, threadId } = await this.composeRaw(opts);
+    const res = await this.gmail.users.messages.send({
+      userId: "me",
+      requestBody: {
+        raw,
+        ...(threadId ? { threadId } : {}),
+      },
+    });
+    return {
+      success: true,
+      messageId: res.data.id!,
+      threadId: res.data.threadId!,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // save_draft
+  // -----------------------------------------------------------------------
+
+  async saveDraft(opts: ComposeOptions): Promise<DraftResult> {
+    const { raw, threadId } = await this.composeRaw(opts);
+    const res = await this.gmail.users.drafts.create({
+      userId: "me",
+      requestBody: {
+        message: {
+          raw,
+          ...(threadId ? { threadId } : {}),
+        },
+      },
+    });
+    return {
+      success: true,
+      draftId: res.data.id!,
+      messageId: res.data.message?.id ?? "",
+      threadId: res.data.message?.threadId ?? threadId ?? "",
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // reply_to_email — send a reply that threads properly
+  // -----------------------------------------------------------------------
+
+  async replyToEmail(
+    messageId: string,
+    body: string,
+    replyAll: boolean = false,
+    extraCc: string[] = [],
+    extraBcc: string[] = [],
+    saveDraftOnly: boolean = false
+  ): Promise<SendResult | DraftResult> {
+    const source = await this.getEmail(messageId);
+    const opts = this.buildReplyComposeOptions(source, body, replyAll, extraCc, extraBcc);
+    return saveDraftOnly ? this.saveDraft(opts) : this.sendEmail(opts);
+  }
+
+  // -----------------------------------------------------------------------
+  // Reply helpers
+  // -----------------------------------------------------------------------
+
+  private buildReplyComposeOptions(
+    source: EmailDetail,
+    body: string,
+    replyAll: boolean,
+    extraCc: string[],
+    extraBcc: string[]
+  ): ComposeOptions {
+    const myAddresses = this.collectSelfAddresses(source);
+    const fromAddrs = this.parseAddressList(source.headers["From"] ?? source.from);
+    const sourceToAddrs = this.parseAddressList(source.headers["To"] ?? source.to);
+    const sourceCcAddrs = this.parseAddressList(source.headers["Cc"] ?? "");
+
+    // Primary reply target: sender of the source (Reply-To beats From).
+    const replyTo = this.parseAddressList(source.headers["Reply-To"] ?? "");
+    const to = (replyTo.length > 0 ? replyTo : fromAddrs).filter(
+      (a) => !myAddresses.has(a.toLowerCase())
+    );
+
+    // Reply-all: source's To + Cc minus ourselves and the primary recipient.
+    let cc: string[] = [];
+    if (replyAll) {
+      const seen = new Set<string>(to.map((a) => a.toLowerCase()));
+      for (const list of [sourceToAddrs, sourceCcAddrs]) {
+        for (const addr of list) {
+          const key = addr.toLowerCase();
+          if (myAddresses.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          cc.push(addr);
+        }
+      }
+    }
+    cc.push(...extraCc);
+
+    const subject = this.ensureReplyPrefix(source.subject);
+    const quoted = this.quoteOriginal(source, body);
+
+    return {
+      to,
+      cc: cc.length > 0 ? cc : undefined,
+      bcc: extraBcc.length > 0 ? extraBcc : undefined,
+      subject,
+      body: quoted,
+      inReplyToMessageId: source.id,
+    };
+  }
+
+  private ensureReplyPrefix(subject: string): string {
+    const trimmed = (subject ?? "").trim();
+    return /^re:\s/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
+  }
+
+  private quoteOriginal(source: EmailDetail, replyBody: string): string {
+    const dateLabel = source.date || "earlier";
+    const fromLabel = source.from || "(unknown sender)";
+    const sep = `\n\nOn ${dateLabel}, ${fromLabel} wrote:`;
+    const quotedBody = (source.body || source.snippet || "")
+      .split(/\r?\n/)
+      .map((line) => `> ${line}`)
+      .join("\n");
+    return `${replyBody}\n${sep}\n${quotedBody}`;
+  }
+
+  /**
+   * Collect addresses that represent "me" on this thread — used to filter
+   * ourselves out of reply-all recipient lists. We can't introspect the
+   * authenticated user's email from the access token alone (cheaply), so we
+   * trust the Delivered-To / X-Original-To headers plus any address in To/Cc
+   * that matches the recipient hints downstream. The server's MCP layer also
+   * passes through which account we authenticated as via the `account`
+   * parameter and could supply that — but here we extract conservatively.
+   */
+  private collectSelfAddresses(source: EmailDetail): Set<string> {
+    const addrs = new Set<string>();
+    for (const hdr of ["Delivered-To", "X-Original-To", "X-Forwarded-To"]) {
+      const v = source.headers[hdr];
+      if (v) for (const a of this.parseAddressList(v)) addrs.add(a.toLowerCase());
+    }
+    return addrs;
+  }
+
+  // -----------------------------------------------------------------------
+  // Compose — assemble RFC 822 raw message body
+  // -----------------------------------------------------------------------
+
+  private async composeRaw(
+    opts: ComposeOptions
+  ): Promise<{ raw: string; threadId?: string }> {
+    if (!opts.to || opts.to.length === 0) {
+      throw new Error("send/draft requires at least one recipient in `to`.");
+    }
+    if (!opts.subject) {
+      throw new Error("send/draft requires a `subject`.");
+    }
+
+    const lines: string[] = [];
+    lines.push(`To: ${opts.to.join(", ")}`);
+    if (opts.cc && opts.cc.length > 0) lines.push(`Cc: ${opts.cc.join(", ")}`);
+    if (opts.bcc && opts.bcc.length > 0) lines.push(`Bcc: ${opts.bcc.join(", ")}`);
+    lines.push(`Subject: ${opts.subject}`);
+    lines.push(`MIME-Version: 1.0`);
+    lines.push(`Content-Type: text/plain; charset="UTF-8"`);
+    lines.push(`Content-Transfer-Encoding: 7bit`);
+
+    let threadId: string | undefined;
+    if (opts.inReplyToMessageId) {
+      const src = await this.gmail.users.messages.get({
+        userId: "me",
+        id: opts.inReplyToMessageId,
+        format: "metadata",
+        metadataHeaders: ["Message-ID", "References"],
+      });
+      threadId = src.data.threadId ?? undefined;
+
+      const headers = src.data.payload?.headers ?? [];
+      const hdr = (name: string) =>
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value;
+      const msgId = hdr("Message-ID");
+      const refs = hdr("References");
+
+      if (msgId) lines.push(`In-Reply-To: ${msgId}`);
+      if (msgId || refs) {
+        const referencesChain = [refs, msgId].filter(Boolean).join(" ");
+        if (referencesChain) lines.push(`References: ${referencesChain}`);
+      }
+    }
+
+    lines.push("");
+    lines.push(opts.body ?? "");
+
+    const raw = Buffer.from(lines.join("\r\n"), "utf-8").toString("base64url");
+    return { raw, threadId };
+  }
+
+  /**
+   * Parse an RFC 5322 address-list header value into bare email addresses.
+   * Strips display names and the surrounding angle brackets. Tolerates malformed
+   * input (returns whatever looks like an email).
+   */
+  private parseAddressList(headerValue: string): string[] {
+    if (!headerValue) return [];
+    const result: string[] = [];
+    // Split on commas that aren't inside quoted display names. Simple split is
+    // close enough for normal Gmail headers; edge cases (commas inside quoted
+    // display names) are rare in practice.
+    for (const part of headerValue.split(",")) {
+      const m = part.match(/<([^>]+)>/);
+      if (m) {
+        result.push(m[1].trim());
+      } else {
+        const bare = part.trim();
+        if (/\S+@\S+/.test(bare)) result.push(bare);
+      }
+    }
+    return result;
   }
 
   // -----------------------------------------------------------------------

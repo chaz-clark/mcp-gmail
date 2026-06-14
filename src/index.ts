@@ -18,6 +18,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD!;
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
@@ -269,6 +270,117 @@ function createMcpServer(): McpServer {
           {
             type: "text" as const,
             text: JSON.stringify({ account, ...result }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ---- send_email ----
+  server.tool(
+    "send_email",
+    "Send an email from the specified account. For replies, prefer reply_to_email so threading headers are set correctly.",
+    {
+      account: z.string().describe("Email address of the account to send from"),
+      to: z
+        .array(z.string())
+        .min(1)
+        .describe("Recipient email addresses (To)"),
+      cc: z.array(z.string()).optional().describe("CC recipient email addresses"),
+      bcc: z.array(z.string()).optional().describe("BCC recipient email addresses"),
+      subject: z.string().min(1).describe("Email subject line"),
+      body: z.string().describe("Plain-text email body"),
+    },
+    async ({ account, to, cc, bcc, subject, body }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.sendEmail({ to, cc, bcc, subject, body });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ account, ...result, message: "Email sent." }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ---- save_draft ----
+  server.tool(
+    "save_draft",
+    "Save a draft email to Gmail Drafts without sending. The operator can review and send from Gmail's UI or via send_draft (future).",
+    {
+      account: z.string().describe("Email address of the account that will own the draft"),
+      to: z.array(z.string()).min(1).describe("Recipient email addresses (To)"),
+      cc: z.array(z.string()).optional().describe("CC recipient email addresses"),
+      bcc: z.array(z.string()).optional().describe("BCC recipient email addresses"),
+      subject: z.string().min(1).describe("Email subject line"),
+      body: z.string().describe("Plain-text email body"),
+    },
+    async ({ account, to, cc, bcc, subject, body }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.saveDraft({ to, cc, bcc, subject, body });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ account, ...result, message: "Draft saved." }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ---- reply_to_email ----
+  server.tool(
+    "reply_to_email",
+    "Reply to an existing Gmail message. Threads via In-Reply-To + References + threadId. Set reply_all=true to include the source's To+Cc minus self. Set save_draft_only=true to land the reply in Drafts instead of sending immediately.",
+    {
+      account: z
+        .string()
+        .describe("Email address of the account this message belongs to"),
+      message_id: z.string().describe("Gmail message ID of the source message being replied to"),
+      body: z.string().describe("Reply body (plain text). The original message is auto-quoted below."),
+      reply_all: z
+        .boolean()
+        .default(false)
+        .describe("When true, include the source's To + Cc on the reply (minus self)."),
+      extra_cc: z
+        .array(z.string())
+        .default([])
+        .describe("Additional CC addresses to add beyond reply-all expansion."),
+      extra_bcc: z
+        .array(z.string())
+        .default([])
+        .describe("Additional BCC addresses."),
+      save_draft_only: z
+        .boolean()
+        .default(false)
+        .describe("When true, save to Drafts instead of sending. Defaults to send."),
+    },
+    async ({ account, message_id, body, reply_all, extra_cc, extra_bcc, save_draft_only }) => {
+      const gmail = await getGmailServiceForAccount(account);
+      const result = await gmail.replyToEmail(
+        message_id,
+        body,
+        reply_all,
+        extra_cc,
+        extra_bcc,
+        save_draft_only
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                account,
+                ...result,
+                message: save_draft_only ? "Reply saved to Drafts." : "Reply sent.",
+              },
+              null,
+              2
+            ),
           },
         ],
       };

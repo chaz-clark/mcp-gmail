@@ -1,14 +1,26 @@
-# Gmail MCP Server
+# mcp-gmail
 
-### Multi-Account Gmail for AI Agents & Assistants
+### Multi-Account Gmail MCP — read, write, archive, label, unsubscribe, **send, draft, reply**
 
-An open-source [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives AI agents and assistants full read and write access to Gmail. Connect multiple Gmail accounts, search emails, archive, label, and auto-unsubscribe. All through one server.
+> **Fork status:** This is a personal fork by Chaz Clark, built on top of [navbuildz/gmail-mcp-server](https://github.com/navbuildz/gmail-mcp-server). Adds compose-side tools — `send_email`, `save_draft`, `reply_to_email` (with reply-all + save-draft-only modes + RFC 5322 threading via `In-Reply-To` / `References`) — plus a `docker-compose.yml` for local self-host. Upstream is read-mostly; this fork makes it usable for personal email triage and ghostwriting workflows.
+
+An open-source [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives AI agents and assistants full Gmail access — read, write, archive, label, auto-unsubscribe, **plus send / draft / reply with proper thread headers**. Connect multiple Gmail accounts through one server.
 
 ![Gmail MCP Server Banner](banner.png)
 
-Works with **Claude**, **OpenClaw**, **Cursor**, **Windsurf**, **Cline**, **Continue**, and any MCP-compatible client.
+Works with **Claude Code**, **Claude Desktop**, **Cursor**, **Windsurf**, **Cline**, **Continue**, and any MCP-compatible client.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/navbuildz/gmail-mcp-server)
+
+## Fork additions
+
+| Tool | Description |
+|---|---|
+| `send_email` | Send an email from a specified account (To / Cc / Bcc / Subject / Body). |
+| `save_draft` | Save a draft to Gmail Drafts without sending — review and send manually or via `reply_to_email(save_draft_only: true)`. |
+| `reply_to_email` | Reply to an existing message. Threads correctly via `In-Reply-To` / `References` / `threadId`. Supports `reply_all` flag, extra Cc/Bcc additions, and `save_draft_only` for propose-then-send workflows. |
+
+Plus: `gmail.compose` OAuth scope added (required for send and draft creation); `docker-compose.yml` shipped for local Docker self-host with health checks.
 
 ---
 
